@@ -64,170 +64,39 @@ def perform_clustering(fingerprints: np.ndarray, n_clusters: int, random_state: 
     return cluster_labels
 
 
-def merge_small_clusters(df: pd.DataFrame, cluster_col: str, min_cluster_size: int) -> pd.DataFrame:
+def merge_small_clusters_to_one(df: pd.DataFrame, cluster_col: str, min_cluster_size: int) -> pd.DataFrame:
     """
-    Merge small clusters
-    
-    Args:
-        df: DataFrame
-        cluster_col: Cluster column name
-        min_cluster_size: Minimum cluster size
-        
-    Returns:
-        DataFrame with merged clusters
+    Merge all clusters smaller than min_cluster_size into a single new cluster (-1)
     """
     df_copy = df.copy()
     cluster_counts = df_copy[cluster_col].value_counts()
-    
-    # Identify small and large clusters
     small_clusters = cluster_counts[cluster_counts < min_cluster_size].index.tolist()
-    large_clusters = cluster_counts[cluster_counts >= min_cluster_size].index.tolist()
-    
     if not small_clusters:
         return df_copy
-    
-    print(f"Found {len(small_clusters)} small clusters (size < {min_cluster_size}), merging...")
-    
-    # If no large clusters, merge all small clusters into one
-    if not large_clusters:
-        print("All clusters are small, merging into one cluster")
-        df_copy.loc[df_copy[cluster_col].isin(small_clusters), cluster_col] = 0
-        return df_copy
-    
-    # Randomly assign small clusters to large clusters
-    for small_cluster in small_clusters:
-        # Randomly select a large cluster for merging
-        target_cluster = random.choice(large_clusters)
-        df_copy.loc[df_copy[cluster_col] == small_cluster, cluster_col] = target_cluster
-        print(f"Merged cluster {small_cluster} into cluster {target_cluster}")
-    
+    print(f"Found {len(small_clusters)} small clusters (size < {min_cluster_size}), merging into one group (-1)...")
+    df_copy.loc[df_copy[cluster_col].isin(small_clusters), cluster_col] = -1
     return df_copy
 
 
-def stratified_split_within_cluster(cluster_data: pd.DataFrame, 
-                                   test_size: float, 
-                                   val_size: float = None,
-                                   min_samples_per_class: int = 10,
-                                   random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def random_split_indices(n, ratios, seed=42):
     """
-    Perform stratified split within cluster (using exact sample count calculation)
-    
-    Args:
-        cluster_data: Data within cluster
-        test_size: Test set ratio
-        val_size: Validation set ratio (if None, no validation set)
-        min_samples_per_class: Minimum samples per class
-        random_state: Random seed
-        
-    Returns:
-        (train_set, val_set, test_set) or (train_set, None, test_set)
+    Randomly split n samples into groups according to ratios. Return a list of index arrays.
     """
-    labels = cluster_data['label'].values
-    unique_labels = np.unique(labels)
-    n_samples = len(cluster_data)
-    
-    # Check if each class has sufficient samples
-    label_counts = pd.Series(labels).value_counts()
-    insufficient_classes = label_counts[label_counts < min_samples_per_class]
-    
-    # Calculate exact sample counts
-    if val_size is not None:
-        n_test = int(n_samples * test_size)
-        n_val = int(n_samples * val_size)
-        n_train = n_samples - n_test - n_val
-        
-        # Handle remaining samples (randomly assign to sets)
-        remaining = n_samples - (n_train + n_val + n_test)
-        if remaining > 0:
-            np.random.seed(random_state)
-            # Randomly decide which set gets remaining samples
-            choices = ['train', 'val', 'test']
-            for _ in range(remaining):
-                choice = np.random.choice(choices)
-                if choice == 'train':
-                    n_train += 1
-                elif choice == 'val':
-                    n_val += 1
-                else:
-                    n_test += 1
-    else:
-        n_test = int(n_samples * test_size)
-        n_train = n_samples - n_test
-        n_val = 0
-    
-    if len(insufficient_classes) > 0:
-        print(f"  Insufficient samples for some classes (< {min_samples_per_class}), using random split")
-        # Random split (using exact sample counts)
-        indices = np.arange(n_samples)
-        np.random.seed(random_state)
-        np.random.shuffle(indices)
-        
-        if val_size is not None:
-            train_idx = indices[:n_train]
-            val_idx = indices[n_train:n_train+n_val]
-            test_idx = indices[n_train+n_val:]
-            return (cluster_data.iloc[train_idx].copy(), 
-                   cluster_data.iloc[val_idx].copy(), 
-                   cluster_data.iloc[test_idx].copy())
-        else:
-            train_idx = indices[:n_train]
-            test_idx = indices[n_train:]
-            return (cluster_data.iloc[train_idx].copy(), 
-                   None, 
-                   cluster_data.iloc[test_idx].copy())
-    
-    # 分层划分（尽量保持类别比例）
-    try:
-        if val_size is not None:
-            # First split out training set
-            train_data, temp_data = train_test_split(
-                cluster_data, train_size=n_train,
-                stratify=labels, random_state=random_state, shuffle=True
-            )
-            
-            # Then split validation and test sets from remaining data
-            temp_labels = temp_data['label'].values
-            if len(temp_data) == n_val + n_test:
-                val_data, test_data = train_test_split(
-                    temp_data, train_size=n_val,
-                    stratify=temp_labels, random_state=random_state, shuffle=True
-                )
-            else:
-                # If sample count mismatch, use random split
-                temp_indices = np.arange(len(temp_data))
-                np.random.seed(random_state)
-                np.random.shuffle(temp_indices)
-                val_data = temp_data.iloc[temp_indices[:n_val]].copy()
-                test_data = temp_data.iloc[temp_indices[n_val:]].copy()
-            
-            return train_data, val_data, test_data
-        else:
-            # Binary split: train/test
-            train_data, test_data = train_test_split(
-                cluster_data, train_size=n_train,
-                stratify=labels, random_state=random_state, shuffle=True
-            )
-            return train_data, None, test_data
-    except ValueError as e:
-        print(f"  Stratified split failed, using random split: {e}")
-        # Fallback to random split (using exact sample counts)
-        indices = np.arange(n_samples)
-        np.random.seed(random_state)
-        np.random.shuffle(indices)
-        
-        if val_size is not None:
-            train_idx = indices[:n_train]
-            val_idx = indices[n_train:n_train+n_val]
-            test_idx = indices[n_train+n_val:]
-            return (cluster_data.iloc[train_idx].copy(), 
-                   cluster_data.iloc[val_idx].copy(), 
-                   cluster_data.iloc[test_idx].copy())
-        else:
-            train_idx = indices[:n_train]
-            test_idx = indices[n_train:]
-            return (cluster_data.iloc[train_idx].copy(), 
-                   None, 
-                   cluster_data.iloc[test_idx].copy())
+    np.random.seed(seed)
+    indices = np.arange(n)
+    np.random.shuffle(indices)
+    sizes = [int(n * r) for r in ratios]
+    total = sum(sizes)
+    remain = n - total
+    # 随机把余数分配到各组
+    for i in np.random.choice(len(ratios), remain, replace=False):
+        sizes[i] += 1
+    splits = []
+    start = 0
+    for s in sizes:
+        splits.append(indices[start:start+s])
+        start += s
+    return splits
 
 
 def random_split_mode(df: pd.DataFrame, 
@@ -238,99 +107,140 @@ def random_split_mode(df: pd.DataFrame,
                      output_dir: str,
                      random_seed: int = 42,
                      n_repeats: int = 1) -> None:
-    """
-    Random split mode (supports repeated splits)
-    
-    Args:
-        df: Input DataFrame
-        n_clusters: Number of clusters
-        train_ratio: Training set ratio
-        val_ratio: Validation set ratio
-        test_ratio: Test set ratio
-        output_dir: Output directory
-        random_seed: Initial random seed
-        n_repeats: Number of repeats
-    """
     print(f"\n=== Random Split Mode ({n_repeats} repeats) ===")
+    print(f"Total dataset size: {len(df)} compounds")
+    print(f"Number of clusters: {n_clusters}")
     print(f"Split ratios - Train: {train_ratio:.1f}, Val: {val_ratio:.1f}, Test: {test_ratio:.1f}")
+    print(f"Minimum cluster size threshold: 10")
     
-    # Calculate ECFP4 fingerprints
-    print("Calculating ECFP4 molecular fingerprints...")
     fingerprints = calculate_ecfp4_fingerprints(df['SMILES'].tolist())
-    
-    # Clustering (cluster only once)
-    print(f"Performing K-means clustering (n_clusters={n_clusters})...")
     cluster_labels = perform_clustering(fingerprints, n_clusters, random_state=42)
     df['cluster'] = cluster_labels
+    min_cluster_size = 10
+    df = merge_small_clusters_to_one(df, 'cluster', min_cluster_size)
     
-    # Merge small clusters
-    min_cluster_size = 10  # Minimum cluster size for random split mode
-    df = merge_small_clusters(df, 'cluster', min_cluster_size)
-    
-    # Repeated splits
     for repeat in range(n_repeats):
         current_seed = random_seed + repeat
         print(f"\n--- Split {repeat + 1} (random seed: {current_seed}) ---")
         
-        train_dfs = []
-        val_dfs = []
-        test_dfs = []
+        # 收集所有余数和合并族数据
+        all_remainders = []
+        unique_clusters = [c for c in df['cluster'].unique() if c != -1]
         
-        unique_clusters = df['cluster'].unique()
+        print(f"\n--- Large Clusters Processing ---")
+        print(f"Found {len(unique_clusters)} large clusters (size >= {min_cluster_size})")
+        
+        # 先分配满足阈值的大族
+        train_dfs, val_dfs, test_dfs = [], [], []
+        total_large_cluster_samples = 0
+        total_remainders = 0
+        
         for cluster_id in unique_clusters:
             cluster_data = df[df['cluster'] == cluster_id].copy()
-            print(f"Processing cluster {cluster_id}: {len(cluster_data)} samples")
+            n = len(cluster_data)
+            total_large_cluster_samples += n
             
-            # Stratified split within cluster
-            train_data, val_data, test_data = stratified_split_within_cluster(
-                cluster_data, 
-                test_size=test_ratio,
-                val_size=val_ratio,
-                min_samples_per_class=10,
-                random_state=current_seed
-            )
+            # 计算每个集合应该分到的样本数
+            n_train = int(n * train_ratio)
+            n_val = int(n * val_ratio)
+            n_test = int(n * test_ratio)
+            total_allocated = n_train + n_val + n_test
+            remainder = n - total_allocated
+            
+            print(f"\nCluster {cluster_id}: {n} compounds")
+            print(f"  Train: {n_train}, Val: {n_val}, Test: {n_test}")
+            print(f"  Total allocated: {total_allocated}, Remainder: {remainder}")
+            
+            # 先按基础大小分配
+            train_data = cluster_data.iloc[:n_train]
+            val_data = cluster_data.iloc[n_train:n_train+n_val]
+            test_data = cluster_data.iloc[n_train+n_val:n_train+n_val+n_test]
             
             train_dfs.append(train_data)
-            if val_data is not None:
-                val_dfs.append(val_data)
+            val_dfs.append(val_data)
             test_dfs.append(test_data)
+            
+            # 收集余数
+            if remainder > 0:
+                remainder_data = cluster_data.iloc[n_train+n_val+n_test:]
+                all_remainders.append(remainder_data)
+                total_remainders += remainder
+                print(f"  Collected {remainder} remainder compounds")
         
-        # Merge results from all clusters
+        print(f"\nTotal large cluster samples: {total_large_cluster_samples}")
+        print(f"Total remainders from large clusters: {total_remainders}")
+        
+        # 合并族数据
+        merged_data = df[df['cluster'] == -1].copy()
+        if len(merged_data) > 0:
+            all_remainders.append(merged_data)
+            print(f"\n--- Small Clusters Processing ---")
+            print(f"Found 1 merged cluster (combining all small clusters): {len(merged_data)} compounds")
+            print(f"  Added to remainder pool")
+        
+        # 将所有余数和合并族数据合并
+        if all_remainders:
+            combined_remainder_data = pd.concat(all_remainders, ignore_index=True)
+            n_remainder = len(combined_remainder_data)
+            print(f"\n--- Combined Remainder Processing ---")
+            print(f"Combined remainder data: {n_remainder} samples")
+            
+            # 对合并的余数数据按比例分配
+            n_train_remainder = int(n_remainder * train_ratio)
+            n_val_remainder = int(n_remainder * val_ratio)
+            n_test_remainder = int(n_remainder * test_ratio)
+            total_allocated_remainder = n_train_remainder + n_val_remainder + n_test_remainder
+            final_remainder = n_remainder - total_allocated_remainder
+            
+            print(f"  Train: {n_train_remainder}, Val: {n_val_remainder}, Test: {n_test_remainder}")
+            print(f"  Total allocated: {total_allocated_remainder}, Final remainder: {final_remainder}")
+            
+            train_remainder = combined_remainder_data.iloc[:n_train_remainder]
+            val_remainder = combined_remainder_data.iloc[n_train_remainder:n_train_remainder+n_val_remainder]
+            test_remainder = combined_remainder_data.iloc[n_train_remainder+n_val_remainder:n_train_remainder+n_val_remainder+n_test_remainder]
+            
+            train_dfs.append(train_remainder)
+            val_dfs.append(val_remainder)
+            test_dfs.append(test_remainder)
+            
+            # 最终余数随机分配
+            if final_remainder > 0:
+                final_remainder_data = combined_remainder_data.iloc[n_train_remainder+n_val_remainder+n_test_remainder:]
+                np.random.seed(current_seed)
+                choices = ['train', 'val', 'test']
+                assigned_to = []
+                for i in range(final_remainder):
+                    choice = np.random.choice(choices)
+                    assigned_to.append(choice)
+                    if choice == 'train':
+                        train_dfs.append(final_remainder_data.iloc[[i]])
+                    elif choice == 'val':
+                        val_dfs.append(final_remainder_data.iloc[[i]])
+                    else:
+                        test_dfs.append(final_remainder_data.iloc[[i]])
+                print(f"  Final {final_remainder} samples randomly assigned to: {assigned_to}")
+        else:
+            print(f"\nNo remainder data to process")
+        
+        print(f"\n--- Final Set Generation ---")
+        
         final_train = pd.concat(train_dfs, ignore_index=True)
+        final_val = pd.concat(val_dfs, ignore_index=True)
         final_test = pd.concat(test_dfs, ignore_index=True)
-        final_val = pd.concat(val_dfs, ignore_index=True) if val_dfs else None
         
-        # Shuffle indices (maintain compound-label correspondence)
-        np.random.seed(current_seed)
+        # Shuffle
+        for df_ in [final_train, final_val, final_test]:
+            df_.reset_index(drop=True, inplace=True)
         
-        # Shuffle training set
-        train_indices = np.arange(len(final_train))
-        np.random.shuffle(train_indices)
-        final_train = final_train.iloc[train_indices].reset_index(drop=True)
-        
-        # Shuffle test set
-        test_indices = np.arange(len(final_test))
-        np.random.shuffle(test_indices)
-        final_test = final_test.iloc[test_indices].reset_index(drop=True)
-        
-        # Shuffle validation set (if exists)
-        if final_val is not None:
-            val_indices = np.arange(len(final_val))
-            np.random.shuffle(val_indices)
-            final_val = final_val.iloc[val_indices].reset_index(drop=True)
-        
-        # Save results
         suffix = f"{repeat + 1}" if n_repeats > 1 else ""
         final_train.to_csv(os.path.join(output_dir, f"X_train{suffix}.csv"), index=False)
         final_test.to_csv(os.path.join(output_dir, f"X_test{suffix}.csv"), index=False)
-        if final_val is not None:
-            final_val.to_csv(os.path.join(output_dir, f"X_val{suffix}.csv"), index=False)
+        final_val.to_csv(os.path.join(output_dir, f"X_val{suffix}.csv"), index=False)
         
-        # Output statistics
-        print(f"Training set: {len(final_train)} samples")
-        print(f"Test set: {len(final_test)} samples")
-        if final_val is not None:
-            print(f"Validation set: {len(final_val)} samples")
+        print(f"Final results:")
+        print(f"  Training set: {len(final_train)} samples")
+        print(f"  Validation set: {len(final_val)} samples")
+        print(f"  Test set: {len(final_test)} samples")
 
 
 def cross_validation_mode(df: pd.DataFrame,
@@ -338,122 +248,136 @@ def cross_validation_mode(df: pd.DataFrame,
                          n_folds: int,
                          output_dir: str,
                          random_seed: int = 42) -> None:
-    """
-    Cross-validation mode
-    
-    Args:
-        df: Input DataFrame
-        n_clusters: Number of clusters
-        n_folds: Number of folds
-        output_dir: Output directory
-        random_seed: Random seed
-    """
     print(f"\n=== {n_folds}-Fold Cross-Validation Mode ===")
+    print(f"Total dataset size: {len(df)} compounds")
+    print(f"Number of clusters: {n_clusters}")
+    print(f"Number of folds: {n_folds}")
+    print(f"Minimum cluster size threshold: {n_folds}")
     
-    # Calculate ECFP4 fingerprints
-    print("Calculating ECFP4 molecular fingerprints...")
     fingerprints = calculate_ecfp4_fingerprints(df['SMILES'].tolist())
-    
-    # Clustering
-    print(f"Performing K-means clustering (n_clusters={n_clusters})...")
     cluster_labels = perform_clustering(fingerprints, n_clusters, random_state=42)
     df['cluster'] = cluster_labels
+    min_cluster_size = n_folds
+    df = merge_small_clusters_to_one(df, 'cluster', min_cluster_size)
     
-    # Merge small clusters
-    min_cluster_size = n_folds  # Minimum cluster size equals number of folds for CV mode
-    df = merge_small_clusters(df, 'cluster', min_cluster_size)
+    # 收集所有余数和合并族数据
+    all_remainders = []
+    unique_clusters = [c for c in df['cluster'].unique() if c != -1]
     
-    # Create cross-validation folds for each cluster
-    unique_clusters = df['cluster'].unique()
-    cluster_folds = {}
+    print(f"\n--- Large Clusters Processing ---")
+    print(f"Found {len(unique_clusters)} large clusters (size >= {min_cluster_size})")
+    
+    # 先分配满足阈值的大族
+    cluster_fold_indices = {}
+    total_large_cluster_samples = 0
+    total_remainders = 0
     
     for cluster_id in unique_clusters:
         cluster_data = df[df['cluster'] == cluster_id].copy()
-        labels = cluster_data['label'].values
+        n = len(cluster_data)
+        total_large_cluster_samples += n
         
-        print(f"Cluster {cluster_id}: {len(cluster_data)} samples")
+        # 计算每个折应该分到的样本数
+        base_size = n // n_folds
+        remainder = n % n_folds
         
-        # Check if stratified cross-validation is possible
-        label_counts = pd.Series(labels).value_counts()
-        min_count = label_counts.min()
+        print(f"\nCluster {cluster_id}: {n} compounds")
+        print(f"  Base size per fold: {base_size}")
+        print(f"  Remainder: {remainder}")
         
-        if min_count < n_folds:
-            print(f"  Insufficient samples for some classes (< {n_folds}), using random CV")
-            # Random cross-validation (using exact sample count division)
-            indices = np.arange(len(cluster_data))
-            np.random.seed(random_seed)
-            np.random.shuffle(indices)
-            
-            # Calculate exact sample count per fold
-            n_samples = len(cluster_data)
-            base_size = n_samples // n_folds
-            remainder = n_samples % n_folds
-            
-            # Randomly decide which folds get extra samples (avoid always first few folds)
-            if remainder > 0:
-                np.random.seed(random_seed + cluster_id)  # Use cluster ID to ensure different allocation per cluster
-                extra_folds = np.random.choice(n_folds, remainder, replace=False)
-            else:
-                extra_folds = []
-            
-            folds = []
-            start_idx = 0
-            for i in range(n_folds):
-                # Randomly selected folds get one extra sample
-                fold_size = base_size + (1 if i in extra_folds else 0)
-                end_idx = start_idx + fold_size
-                folds.append(indices[start_idx:end_idx])
-                start_idx = end_idx
-        else:
-            # Stratified cross-validation
-            skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
-            folds = [test_idx for _, test_idx in skf.split(cluster_data, labels)]
+        # 先按基础大小分配
+        fold_indices = []
+        start_idx = 0
+        for i in range(n_folds):
+            end_idx = start_idx + base_size
+            fold_indices.append(np.arange(start_idx, end_idx))
+            start_idx = end_idx
         
-        cluster_folds[cluster_id] = (cluster_data, folds)
+        # 收集余数
+        if remainder > 0:
+            remainder_indices = np.arange(n - remainder, n)
+            all_remainders.append(cluster_data.iloc[remainder_indices])
+            total_remainders += remainder
+            print(f"  Collected {remainder} remainder compounds")
+        
+        cluster_fold_indices[cluster_id] = fold_indices
     
-    # Generate training and validation sets for each fold
+    print(f"\nTotal large cluster samples: {total_large_cluster_samples}")
+    print(f"Total remainders from large clusters: {total_remainders}")
+    
+    # 合并族数据
+    merged_data = df[df['cluster'] == -1].copy()
+    if len(merged_data) > 0:
+        all_remainders.append(merged_data)
+        print(f"\n--- Small Clusters Processing ---")
+        print(f"Found 1 merged cluster (combining all small clusters): {len(merged_data)} compounds")
+        print(f"  Added to remainder pool")
+    
+    # 将所有余数和合并族数据合并
+    if all_remainders:
+        combined_remainder_data = pd.concat(all_remainders, ignore_index=True)
+        n_remainder = len(combined_remainder_data)
+        print(f"\n--- Combined Remainder Processing ---")
+        print(f"Combined remainder data: {n_remainder} samples")
+        
+        # 对合并的余数数据按比例分配
+        base_size_remainder = n_remainder // n_folds
+        final_remainder = n_remainder % n_folds
+        
+        print(f"  Base size per fold: {base_size_remainder}")
+        print(f"  Final remainder: {final_remainder}")
+        
+        remainder_fold_indices = []
+        start_idx = 0
+        for i in range(n_folds):
+            end_idx = start_idx + base_size_remainder
+            remainder_fold_indices.append(np.arange(start_idx, end_idx))
+            start_idx = end_idx
+        
+        # 最终余数随机分配
+        if final_remainder > 0:
+            final_remainder_indices = np.arange(n_remainder - final_remainder, n_remainder)
+            np.random.seed(random_seed)
+            random_folds = np.random.choice(n_folds, final_remainder, replace=False)
+            print(f"  Final {final_remainder} samples randomly assigned to folds: {[f+1 for f in random_folds]}")
+            for i, fold_idx in enumerate(random_folds):
+                remainder_fold_indices[fold_idx] = np.append(remainder_fold_indices[fold_idx], 
+                                                           final_remainder_indices[i])
+    else:
+        remainder_fold_indices = [[] for _ in range(n_folds)]
+        print(f"\nNo remainder data to process")
+    
+    print(f"\n--- Final Fold Generation ---")
+    
+    # 生成各折的训练和验证集
     for fold in range(n_folds):
-        print(f"\n--- Fold {fold + 1} ---")
+        train_dfs, val_dfs = [], []
         
-        train_dfs = []
-        val_dfs = []
+        # 处理大族数据
+        for cluster_id in unique_clusters:
+            cluster_data = df[df['cluster'] == cluster_id].copy()
+            val_idx = cluster_fold_indices[cluster_id][fold]
+            train_idx = np.concatenate([cluster_fold_indices[cluster_id][i] for i in range(n_folds) if i != fold])
+            val_dfs.append(cluster_data.iloc[val_idx])
+            train_dfs.append(cluster_data.iloc[train_idx])
         
-        for cluster_id, (cluster_data, folds) in cluster_folds.items():
-            # Current fold as validation set
-            val_indices = folds[fold]
-            # Other folds as training set
-            train_indices = np.concatenate([folds[i] for i in range(n_folds) if i != fold])
-            
-            val_data = cluster_data.iloc[val_indices].copy()
-            train_data = cluster_data.iloc[train_indices].copy()
-            
-            train_dfs.append(train_data)
-            val_dfs.append(val_data)
+        # 处理余数数据
+        if all_remainders:
+            val_idx = remainder_fold_indices[fold]
+            train_idx = np.concatenate([remainder_fold_indices[i] for i in range(n_folds) if i != fold])
+            val_dfs.append(combined_remainder_data.iloc[val_idx])
+            train_dfs.append(combined_remainder_data.iloc[train_idx])
         
-        # Merge results from all clusters
         final_train = pd.concat(train_dfs, ignore_index=True)
         final_val = pd.concat(val_dfs, ignore_index=True)
         
-        # Shuffle indices (maintain compound-label correspondence)
-        np.random.seed(random_seed + fold)  # Use different random seed for each fold
+        final_train.reset_index(drop=True, inplace=True)
+        final_val.reset_index(drop=True, inplace=True)
         
-        # Shuffle training set
-        train_indices = np.arange(len(final_train))
-        np.random.shuffle(train_indices)
-        final_train = final_train.iloc[train_indices].reset_index(drop=True)
-        
-        # Shuffle validation set
-        val_indices = np.arange(len(final_val))
-        np.random.shuffle(val_indices)
-        final_val = final_val.iloc[val_indices].reset_index(drop=True)
-        
-        # Save results
         final_train.to_csv(os.path.join(output_dir, f"X_train{fold + 1}.csv"), index=False)
         final_val.to_csv(os.path.join(output_dir, f"X_val{fold + 1}.csv"), index=False)
         
-        # Output statistics
-        print(f"Training set: {len(final_train)} samples")
-        print(f"Validation set: {len(final_val)} samples")
+        print(f"Fold {fold + 1}: Training set: {len(final_train)} samples, Validation set: {len(final_val)} samples")
 
 
 def main():
